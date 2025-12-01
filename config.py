@@ -42,9 +42,21 @@ MODEL_CONFIG = {
     'discriminator_dense': [220, 220],       # Dense layers after CNN
     'discriminator_dropout': 0.3,            # Dropout rate
     
-    # Fourier transform
-    'fourier_components': [3, 6, 9],      # Number of components to extract
+    # Fourier transform configuration
     'use_fourier': True,                   # Enable Fourier feature extraction
+    'fourier_version': 'lite',             # 'full' or 'lite' or 'custom'
+    
+    # Full version (12 features per parameter)
+    'fourier_components': [3, 6, 9],      # FFT component indices for full version
+    
+    # Lite version (3 features per parameter) - RECOMMENDED for faster training
+    'fourier_lite_ma_window': 7,          # Moving average window
+    'fourier_lite_fft_component': 3,      # FFT component index
+    
+    # Custom version (choose your own features)
+    'fourier_custom_features': ['ma7', 'std', 'fft_mag'],  # Feature names to extract
+    'fourier_custom_fft_component': 3,    # FFT component for custom
+    'fourier_custom_ema_span': 12,        # EMA span for custom
     
     # Training parameters
     'batch_size': 64,
@@ -73,6 +85,34 @@ MODEL_CONFIG = {
     'log_frequency': 10,                  # Print metrics every N epochs
     'verbose': 1,
 }
+
+# Feature count based on Fourier version
+def get_expected_feature_count(config=MODEL_CONFIG):
+    """
+    Calculate expected feature count based on Fourier configuration
+    
+    Returns:
+        int: Total number of features after Fourier transformation
+    """
+    n_original = config['n_features']
+    
+    if not config['use_fourier']:
+        return n_original
+    
+    version = config['fourier_version']
+    
+    if version == 'full':
+        # 12 Fourier features per parameter
+        return n_original + (n_original * 12)
+    elif version == 'lite':
+        # 3 Fourier features per parameter
+        return n_original + (n_original * 3)
+    elif version == 'custom':
+        # Based on number of selected features
+        n_custom = len(config['fourier_custom_features'])
+        return n_original + (n_original * n_custom)
+    else:
+        return n_original
 
 # Water Quality Parameters
 # Customize this list based on your specific dataset
@@ -114,3 +154,69 @@ BASELINE_MODELS = [
     'Bi-GRU',
     'GAN-LSTM',
 ]
+
+# Fourier version presets
+FOURIER_PRESETS = {
+    'full': {
+        'description': 'Full 12-feature extraction (maximum accuracy)',
+        'total_features': 14 + (14 * 12),  # 182
+        'memory_usage': 'High',
+        'speed': 'Slower',
+        'recommended_for': 'Production, final models, maximum accuracy'
+    },
+    'lite': {
+        'description': 'Lite 3-feature extraction (fast and efficient)',
+        'total_features': 14 + (14 * 3),   # 56
+        'memory_usage': 'Low (3.25x reduction)',
+        'speed': 'Fast (4x speedup)',
+        'recommended_for': 'Experimentation, large datasets, limited resources'
+    },
+    'custom': {
+        'description': 'Custom feature selection (flexible)',
+        'total_features': 'Varies based on selected features',
+        'memory_usage': 'Configurable',
+        'speed': 'Depends on features',
+        'recommended_for': 'Fine-tuning, domain expertise'
+    }
+}
+
+# Print configuration summary
+def print_config_summary():
+    """
+    Print a summary of the current configuration
+    """
+    print("\n" + "="*70)
+    print("FBG-GANs Configuration Summary")
+    print("="*70)
+    
+    print(f"\nData Configuration:")
+    print(f"  Input steps: {MODEL_CONFIG['input_steps']}")
+    print(f"  Output steps: {MODEL_CONFIG['output_steps']}")
+    print(f"  Water quality parameters: {MODEL_CONFIG['n_features']}")
+    
+    print(f"\nFourier Transform:")
+    fourier_enabled = MODEL_CONFIG['use_fourier']
+    print(f"  Enabled: {fourier_enabled}")
+    
+    if fourier_enabled:
+        version = MODEL_CONFIG['fourier_version']
+        preset = FOURIER_PRESETS.get(version, {})
+        print(f"  Version: {version.upper()}")
+        print(f"  Description: {preset.get('description', 'N/A')}")
+        print(f"  Total features: {get_expected_feature_count()}")
+        print(f"  Memory usage: {preset.get('memory_usage', 'N/A')}")
+        print(f"  Speed: {preset.get('speed', 'N/A')}")
+    
+    print(f"\nModel Architecture:")
+    print(f"  Generator: Bi-GRU {MODEL_CONFIG['generator_units']}")
+    print(f"  Discriminator: CNN {MODEL_CONFIG['discriminator_filters']}")
+    
+    print(f"\nTraining:")
+    print(f"  Batch size: {MODEL_CONFIG['batch_size']}")
+    print(f"  Epochs: {MODEL_CONFIG['epochs']}")
+    print(f"  Learning rate: {MODEL_CONFIG['learning_rate']}")
+    
+    print("="*70 + "\n")
+
+if __name__ == "__main__":
+    print_config_summary()
