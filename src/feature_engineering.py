@@ -1,6 +1,23 @@
 """
 Feature engineering using Fourier Transform
-Based on the paper's methodology for extending data features
+Based on the paper's Figure 4 - Extended Data Features
+
+From the paper (Figure 4), the Fourier features are:
+- MA7: Moving Average with window 7
+- MA21: Moving Average with window 21
+- upperband: Upper Bollinger Band
+- lowerband: Lower Bollinger Band
+- EMA: Exponential Moving Average
+- log_momentum: Log momentum indicator
+- absolute of 3 comp: Magnitude of 3rd Fourier component
+- angle of 3 comp: Phase of 3rd Fourier component
+- absolute of 6 comp: Magnitude of 6th Fourier component
+- angle of 6 comp: Phase of 6th Fourier component
+- absolute of 9 comp: Magnitude of 9th Fourier component
+- angle of 9 comp: Phase of 9th Fourier component
+
+Total: 12 features per variable
+For 14 water quality parameters: 14 original + 14*12 Fourier = 182 total features
 """
 
 import numpy as np
@@ -10,7 +27,7 @@ from typing import List
 class FourierFeatureExtractor:
     """
     Extract Fourier transform features from time series
-    This helps the model learn long-term and short-term trends
+    This extends the original features to help Bi-GRU learn distributional characteristics
     """
     
     def __init__(self, components: List[int] = [3, 6, 9]):
@@ -18,58 +35,125 @@ class FourierFeatureExtractor:
         Initialize Fourier feature extractor
         
         Args:
-            components: List of component numbers to extract
-                       According to paper: [3, 6, 9] components
+            components: Fourier component indices to extract [3, 6, 9] as per paper
         """
         self.components = components
         
-    def extract_fourier_features(self, signal: np.ndarray) -> np.ndarray:
+    def extract_fourier_features_from_signal(self, signal: np.ndarray) -> np.ndarray:
         """
-        Extract Fourier features from a single signal
+        Extract 12 Fourier features from a single time series signal
         
         Args:
-            signal: 1D time series signal
+            signal: 1D array of time series values
             
         Returns:
-            Fourier features: [MA7, MA21, upper_band, lower_band, EMA, log_momentum,
-                              abs_3comp, angle_3comp, abs_6comp, angle_6comp, 
-                              abs_9comp, angle_9comp]
+            Array of 12 features: [MA7, MA21, upper, lower, EMA, log_mom, 
+                                   abs_3, ang_3, abs_6, ang_6, abs_9, ang_9]
         """
+        n = len(signal)
         features = []
         
-        # 1. Moving Averages (MA7, MA21)
-        ma7 = self._moving_average(signal, 7)
-        ma21 = self._moving_average(signal, 21)
-        features.extend([ma7, ma21])
+        # 1. MA7 - Moving Average with window 7
+        window = min(7, n)
+        ma7 = np.mean(signal[-window:]) if n > 0 else 0.0
+        features.append(ma7)
         
-        # 2. Bollinger Bands (upper_band, lower_band)
-        upper, lower = self._bollinger_bands(signal, window=20)
-        features.extend([upper, lower])
+        # 2. MA21 - Moving Average with window 21
+        window = min(21, n)
+        ma21 = np.mean(signal[-window:]) if n > 0 else 0.0
+        features.append(ma21)
         
-        # 3. Exponential Moving Average (EMA)
-        ema = self._exponential_moving_average(signal, span=12)
+        # 3 & 4. Bollinger Bands (upper_band, lower_band)
+        window = min(20, n)
+        if n >= window:
+            rolling_mean = np.mean(signal[-window:])
+            rolling_std = np.std(signal[-window:])
+            upper_band = rolling_mean + 2 * rolling_std
+            lower_band = rolling_mean - 2 * rolling_std
+        else:
+            mean_val = np.mean(signal) if n > 0 else 0.0
+            std_val = np.std(signal) if n > 1 else 0.0
+            upper_band = mean_val + 2 * std_val
+            lower_band = mean_val - 2 * std_val
+        features.append(upper_band)
+        features.append(lower_band)
+        
+        # 5. EMA - Exponential Moving Average (span=12)
+        ema = self._calculate_ema(signal, span=12)
         features.append(ema)
         
-        # 4. Log Momentum
-        log_momentum = self._log_momentum(signal)
-        features.append(log_momentum)
+        # 6. log_momentum
+        log_mom = self._calculate_log_momentum(signal)
+        features.append(log_mom)
         
-        # 5. Fourier components (absolute and angle for different components)
-        fft = np.fft.fft(signal)
-        
-        for n_comp in self.components:
-            # Get the n_comp-th component
-            component = fft[n_comp] if n_comp < len(fft) else 0
+        # 7-12. Fourier components (absolute and angle for components 3, 6, 9)
+        if n > max(self.components):
+            # Perform FFT
+            fft_result = np.fft.fft(signal)
             
-            # Absolute value (magnitude)
-            abs_val = np.abs(component)
-            features.append(abs_val)
-            
-            # Angle (phase)
-            angle = np.angle(component)
-            features.append(angle)
+            for comp_idx in self.components:
+                if comp_idx < len(fft_result):
+                    # Absolute value (magnitude)
+                    abs_val = np.abs(fft_result[comp_idx])
+                    features.append(abs_val)
+                    
+                    # Angle (phase)
+                    angle_val = np.angle(fft_result[comp_idx])
+                    features.append(angle_val)
+                else:
+                    features.extend([0.0, 0.0])
+        else:
+            # Not enough data for FFT, use zeros
+            features.extend([0.0] * 6)  # 3 components * 2 (abs + angle)
         
-        return np.array(features)
+        return np.array(features, dtype=np.float32)
+    
+    def _calculate_ema(self, signal: np.ndarray, span: int = 12) -> float:
+        """
+        Calculate Exponential Moving Average
+        
+        Args:
+            signal: Time series signal
+            span: EMA span
+            
+        Returns:
+            EMA value
+        """
+        if len(signal) == 0:
+            return 0.0
+        
+        if len(signal) == 1:
+            return signal[0]
+        
+        alpha = 2.0 / (span + 1)
+        ema = signal[0]
+        
+        for val in signal[1:]:
+            ema = alpha * val + (1 - alpha) * ema
+        
+        return ema
+    
+    def _calculate_log_momentum(self, signal: np.ndarray) -> float:
+        """
+        Calculate log momentum: log(current / previous)
+        
+        Args:
+            signal: Time series signal
+            
+        Returns:
+            Log momentum value
+        """
+        if len(signal) < 2:
+            return 0.0
+        
+        current = signal[-1]
+        previous = signal[-2]
+        
+        # Avoid log of zero or negative values
+        if current <= 0 or previous <= 0:
+            return 0.0
+        
+        return np.log(current / previous)
     
     def transform(self, X: np.ndarray) -> np.ndarray:
         """
@@ -77,94 +161,101 @@ class FourierFeatureExtractor:
         
         Args:
             X: Input sequences (n_sequences, input_steps, n_features)
+               For example: (batch_size, 30, 14) for 30 timesteps, 14 water quality params
             
         Returns:
             Extended sequences with Fourier features
-            Shape: (n_sequences, input_steps, n_features + fourier_features)
+            Shape: (n_sequences, input_steps, n_features + n_features*12)
+            For example: (batch_size, 30, 14 + 14*12) = (batch_size, 30, 182)
+                        Or as shown in paper: (Bs, 30, 36) where 36 = original + extended features
+        
+        Note: The paper shows Input(Bs, 30, 36) in Figure 4. This suggests they may have
+              used fewer original features or selected specific Fourier features.
+              Adjust based on your dataset.
         """
         n_sequences, input_steps, n_features = X.shape
         
-        # Process each sequence
-        X_extended = []
+        print(f"Extracting Fourier features...")
+        print(f"  Input shape: {X.shape}")
+        print(f"  Features per variable: 12 (MA7, MA21, upper, lower, EMA, log_mom, 3*FFT components)")
         
-        for seq in X:
-            # seq shape: (input_steps, n_features)
-            seq_features = []
+        X_extended_list = []
+        
+        # Process each sequence
+        for seq_idx in range(n_sequences):
+            seq = X[seq_idx]  # Shape: (input_steps, n_features)
+            seq_extended = []
             
-            # For each time step, extract features from each variable
+            # Process each time step
             for t in range(input_steps):
-                time_features = seq[t, :].copy()  # Original features at time t
+                # Original features at time t
+                original_features = seq[t, :]
                 
                 # Extract Fourier features for each variable
-                for feature_idx in range(n_features):
-                    signal = seq[:t+1, feature_idx]  # Signal up to current time
-                    
-                    # Only extract if we have enough data
-                    if len(signal) >= 21:  # Minimum for MA21
-                        fourier_feats = self.extract_fourier_features(signal)
-                    else:
-                        fourier_feats = np.zeros(12)  # MA7, MA21, upper, lower, EMA, log_mom, 3*2 comps
-                    
-                    time_features = np.concatenate([time_features, fourier_feats])
+                fourier_features_all = []
                 
-                seq_features.append(time_features)
+                for feat_idx in range(n_features):
+                    # Get the signal up to current time step
+                    signal = seq[:t+1, feat_idx]
+                    
+                    # Extract 12 Fourier features
+                    fourier_feats = self.extract_fourier_features_from_signal(signal)
+                    fourier_features_all.extend(fourier_feats)
+                
+                # Combine original + Fourier features
+                combined_features = np.concatenate([
+                    original_features, 
+                    np.array(fourier_features_all)
+                ])
+                
+                seq_extended.append(combined_features)
             
-            X_extended.append(seq_features)
+            X_extended_list.append(seq_extended)
         
-        X_extended = np.array(X_extended)
+        X_extended = np.array(X_extended_list, dtype=np.float32)
         
-        print(f"Fourier feature extraction complete:")
-        print(f"  Original shape: {X.shape}")
         print(f"  Extended shape: {X_extended.shape}")
+        print(f"  Features increased from {n_features} to {X_extended.shape[-1]}")
         
         return X_extended
     
-    def _moving_average(self, signal: np.ndarray, window: int) -> float:
+    def transform_reduced(self, X: np.ndarray, n_top_features: int = None) -> np.ndarray:
         """
-        Calculate moving average for the last window points
+        Transform with optional feature reduction
+        
+        This is useful if you want to match the paper's architecture exactly.
+        For example, if paper shows (Bs, 30, 36), you might want to reduce
+        from 182 total features to 36.
+        
+        Args:
+            X: Input sequences
+            n_top_features: Number of top features to keep (None = keep all)
+            
+        Returns:
+            Extended and optionally reduced sequences
         """
-        if len(signal) < window:
-            return np.mean(signal)
-        return np.mean(signal[-window:])
+        X_extended = self.transform(X)
+        
+        if n_top_features is not None and n_top_features < X_extended.shape[-1]:
+            print(f"  Reducing features from {X_extended.shape[-1]} to {n_top_features}")
+            # Simple approach: take first n_top_features
+            # More sophisticated: use feature selection methods
+            X_extended = X_extended[:, :, :n_top_features]
+        
+        return X_extended
+
+
+def create_extended_features(X: np.ndarray, 
+                            components: List[int] = [3, 6, 9]) -> np.ndarray:
+    """
+    Convenience function to create extended features
     
-    def _exponential_moving_average(self, signal: np.ndarray, span: int) -> float:
-        """
-        Calculate exponential moving average
-        """
-        if len(signal) < 2:
-            return signal[-1] if len(signal) > 0 else 0
+    Args:
+        X: Input sequences (n_sequences, input_steps, n_features)
+        components: Fourier component indices
         
-        alpha = 2 / (span + 1)
-        ema = signal[0]
-        for val in signal[1:]:
-            ema = alpha * val + (1 - alpha) * ema
-        return ema
-    
-    def _bollinger_bands(self, signal: np.ndarray, window: int = 20, num_std: float = 2.0):
-        """
-        Calculate Bollinger Bands
-        """
-        if len(signal) < window:
-            ma = np.mean(signal)
-            std = np.std(signal)
-        else:
-            ma = np.mean(signal[-window:])
-            std = np.std(signal[-window:])
-        
-        upper_band = ma + num_std * std
-        lower_band = ma - num_std * std
-        
-        return upper_band, lower_band
-    
-    def _log_momentum(self, signal: np.ndarray) -> float:
-        """
-        Calculate log momentum
-        """
-        if len(signal) < 2:
-            return 0
-        
-        # Prevent log of zero or negative
-        if signal[-1] <= 0 or signal[-2] <= 0:
-            return 0
-        
-        return np.log(signal[-1] / signal[-2])
+    Returns:
+        Extended sequences with Fourier features
+    """
+    extractor = FourierFeatureExtractor(components=components)
+    return extractor.transform(X)
